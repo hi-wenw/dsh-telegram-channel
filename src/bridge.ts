@@ -22,6 +22,7 @@ import {
 } from './client.js'
 import { MSG, LAST_CB, parseCommand } from './commands.js'
 import { markdownToHtml, splitMessage } from './format.js'
+import { splitRichMarkdown } from './rich-format.js'
 import { formatLastTurn, loadLastTurn } from './history.js'
 import { describeAgent, displayLabel } from './label.js'
 import {
@@ -39,6 +40,7 @@ export interface TelegramBridgeOptions {
   sleep?: (ms: number) => Promise<void>
   maxMessageLength?: number
   pollingTimeoutSec?: number
+  rendering?: 'rich' | 'html'
 }
 
 /** chatId → bound live session id (string form of SessionId) */
@@ -84,6 +86,11 @@ function contentToText(content: readonly ContentBlock[]): string {
     .join('')
 }
 
+function isRichUnsupportedError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err)
+  return /method not found|unknown method|not found|404|bad request|can't parse|rich message/i.test(message)
+}
+
 export class TelegramBridge {
   private readonly ctx: Context
   private readonly token: string
@@ -92,6 +99,7 @@ export class TelegramBridge {
   private readonly client: TelegramClientLike
   private readonly sleep: (ms: number) => Promise<void>
   private readonly maxMessageLength: number
+  private renderingMode: 'rich' | 'html'
 
   private readonly bindings = new Map<string, Binding>()
   private readonly pickers = new Map<string, PickerState>()
@@ -113,6 +121,7 @@ export class TelegramBridge {
     })
     this.sleep = options.sleep ?? defaultSleep
     this.maxMessageLength = options.maxMessageLength ?? 4096
+    this.renderingMode = options.rendering === 'html' ? 'html' : 'rich'
   }
 
   start(): void {
@@ -680,6 +689,32 @@ export class TelegramBridge {
   }
 
   private async deliver(chatId: number, markdown: string): Promise<void> {
+    if (this.renderingMode === 'html') {
+      await this.deliverHtml(chatId, markdown)
+      return
+    }
+
+    let sentAny = false
+    try {
+      const chunks = splitRichMarkdown(markdown)
+      for (const chunk of chunks) {
+        await this.client.sendRichMessage(chatId, chunk)
+        sentAny = true
+      }
+    } catch (err) {
+      if (!sentAny && isRichUnsupportedError(err)) {
+        this.ctx.logger.warn(
+          'dsh-telegram-channel: Rich Message API unavailable, falling back to HTML rendering',
+        )
+        this.renderingMode = 'html'
+        await this.deliverHtml(chatId, markdown)
+        return
+      }
+      this.ctx.logger.error(this.redact(err))
+    }
+  }
+
+  private async deliverHtml(chatId: number, markdown: string): Promise<void> {
     const chunks = splitMessage(markdown, this.maxMessageLength)
     for (const chunk of chunks) {
       const html = markdownToHtml(chunk)

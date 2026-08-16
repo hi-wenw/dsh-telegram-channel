@@ -9,6 +9,7 @@ export interface TelegramChannelConfig {
     allowAllUsers?: boolean;
     maxMessageLength?: number;
     pollingTimeoutSec?: number;
+    rendering?: string;
 }
 export declare const Config: Schema<TelegramChannelConfig>;
 export declare function apply(ctx: Context, config: TelegramChannelConfig): void;

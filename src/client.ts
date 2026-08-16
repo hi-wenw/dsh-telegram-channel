@@ -49,6 +49,11 @@ export interface TelegramBotCommand {
   description: string
 }
 
+export interface TelegramInputRichMessage {
+  markdown: string
+  skip_entity_detection?: boolean
+}
+
 export interface TelegramClientOptions {
   fetch?: typeof fetch
   baseUrl?: string
@@ -64,6 +69,7 @@ export interface TelegramClientLike {
     parseMode?: string,
     replyMarkup?: InlineKeyboardMarkup,
   ): Promise<TelegramMessage>
+  sendRichMessage(chatId: number, markdown: string): Promise<TelegramMessage>
   sendChatAction(chatId: number, action: string): Promise<boolean>
   answerCallbackQuery(callbackQueryId: string, text?: string): Promise<boolean>
   setMyCommands(commands: TelegramBotCommand[]): Promise<boolean>
@@ -165,6 +171,17 @@ export class TelegramClient implements TelegramClientLike {
       body.reply_markup = replyMarkup
     }
     return this.call<TelegramMessage>('sendMessage', body)
+  }
+
+  async sendRichMessage(chatId: number, markdown: string): Promise<TelegramMessage> {
+    const body: Record<string, unknown> = {
+      chat_id: chatId,
+      rich_message: {
+        markdown,
+        skip_entity_detection: true,
+      },
+    }
+    return this.call<TelegramMessage>('sendRichMessage', body)
   }
 
   async sendChatAction(chatId: number, action: string): Promise<boolean> {

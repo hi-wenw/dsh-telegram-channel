@@ -39,6 +39,10 @@ export interface TelegramBotCommand {
     command: string;
     description: string;
 }
+export interface TelegramInputRichMessage {
+    markdown: string;
+    skip_entity_detection?: boolean;
+}
 export interface TelegramClientOptions {
     fetch?: typeof fetch;
     baseUrl?: string;
@@ -48,6 +52,7 @@ export interface TelegramClientLike {
     getMe(): Promise<TelegramUser>;
     getUpdates(offset?: number): Promise<TelegramUpdate[]>;
     sendMessage(chatId: number, text: string, parseMode?: string, replyMarkup?: InlineKeyboardMarkup): Promise<TelegramMessage>;
+    sendRichMessage(chatId: number, markdown: string): Promise<TelegramMessage>;
     sendChatAction(chatId: number, action: string): Promise<boolean>;
     answerCallbackQuery(callbackQueryId: string, text?: string): Promise<boolean>;
     setMyCommands(commands: TelegramBotCommand[]): Promise<boolean>;
@@ -63,6 +68,7 @@ export declare class TelegramClient implements TelegramClientLike {
     getMe(): Promise<TelegramUser>;
     getUpdates(offset?: number): Promise<TelegramUpdate[]>;
     sendMessage(chatId: number, text: string, parseMode?: string, replyMarkup?: InlineKeyboardMarkup): Promise<TelegramMessage>;
+    sendRichMessage(chatId: number, markdown: string): Promise<TelegramMessage>;
     sendChatAction(chatId: number, action: string): Promise<boolean>;
     answerCallbackQuery(callbackQueryId: string, text?: string): Promise<boolean>;
     setMyCommands(commands: TelegramBotCommand[]): Promise<boolean>;

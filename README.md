@@ -174,6 +174,7 @@ dsh plugin --profile web add D:\path\to\dsh-telegram-channel
 | `allowAllUsers` | `true` 仅调试 |
 | `maxMessageLength` | 默认 4096 |
 | `pollingTimeoutSec` | 默认 30 |
+| `rendering` | `rich`（默认，原生 Rich Message）或 `html`（旧 Markdown→HTML 兼容） |
 
 若本机用了 HTTP(S)_PROXY 访问 Telegram，插件会自动走代理（无需再设 `NODE_USE_ENV_PROXY`）。
 

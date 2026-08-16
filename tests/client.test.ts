@@ -51,3 +51,24 @@ test('sendMessage can include reply_markup', async () => {
     inline_keyboard: [[{ text: 'A', callback_data: 'bind:1' }]],
   })
 })
+
+test('sendRichMessage posts native rich markdown body', async () => {
+  const calls: Array<{ url: string; body: Record<string, unknown> }> = []
+  const fetchImpl: typeof fetch = async (input, init) => {
+    calls.push({ url: String(input), body: JSON.parse(String(init?.body)) })
+    return new Response(JSON.stringify({
+      ok: true,
+      result: { message_id: 2, date: 0, chat: { id: 1, type: 'private' }, text: '# hi' },
+    }), { status: 200 })
+  }
+  const client = new TelegramClient('TOK', { fetch: fetchImpl })
+  await client.sendRichMessage(1, '# hi\n\n- a\n- b')
+  assert.match(calls[0]!.url, /\/botTOK\/sendRichMessage$/)
+  assert.deepEqual(calls[0]!.body, {
+    chat_id: 1,
+    rich_message: {
+      markdown: '# hi\n\n- a\n- b',
+      skip_entity_detection: true,
+    },
+  })
+})

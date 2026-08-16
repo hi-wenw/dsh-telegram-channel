@@ -12,6 +12,7 @@ export interface TelegramChannelConfig {
   allowAllUsers?: boolean
   maxMessageLength?: number
   pollingTimeoutSec?: number
+  rendering?: string
 }
 
 export const Config: Schema<TelegramChannelConfig> = Schema.object({
@@ -20,6 +21,7 @@ export const Config: Schema<TelegramChannelConfig> = Schema.object({
   allowAllUsers: Schema.boolean().default(false),
   maxMessageLength: Schema.number().default(4096),
   pollingTimeoutSec: Schema.number().default(30),
+  rendering: Schema.string().default('rich'),
 })
 
 function resolveAllowedUserIds(config: TelegramChannelConfig): number[] {
@@ -51,6 +53,7 @@ export function apply(ctx: Context, config: TelegramChannelConfig): void {
     allowAllUsers: config.allowAllUsers ?? false,
     maxMessageLength: config.maxMessageLength ?? 4096,
     pollingTimeoutSec: config.pollingTimeoutSec ?? 30,
+    rendering: config.rendering === 'html' ? 'html' : 'rich',
   })
   ctx.effect(() => {
     bridge.start()

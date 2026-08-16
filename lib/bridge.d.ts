@@ -8,6 +8,7 @@ export interface TelegramBridgeOptions {
     sleep?: (ms: number) => Promise<void>;
     maxMessageLength?: number;
     pollingTimeoutSec?: number;
+    rendering?: 'rich' | 'html';
 }
 export declare class TelegramBridge {
     private readonly ctx;
@@ -17,6 +18,7 @@ export declare class TelegramBridge {
     private readonly client;
     private readonly sleep;
     private readonly maxMessageLength;
+    private renderingMode;
     private readonly bindings;
     private readonly pickers;
     /** chatId → model awaiting reasoning-effort pick (kept outside picker so list refreshes won't drop it). */
@@ -50,5 +52,6 @@ export declare class TelegramBridge {
     private interruptibleSleep;
     private onSessionEvent;
     private deliver;
+    private deliverHtml;
     private redact;
 }
