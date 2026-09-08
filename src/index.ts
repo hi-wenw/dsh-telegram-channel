@@ -3,8 +3,9 @@ import Schema from '@deepseek-ai/schemastery'
 import { TelegramBridge } from './bridge.js'
 
 export const name = 'dsh-telegram-channel'
-/** agents: followup; apiProxy: workspace/session catalog + /model (Cordis requires inject to read ctx.apiProxy). */
-export const inject = ['agents', 'apiProxy']
+/** agents: followup; apiProxy is OPTIONAL (resolved at runtime via resolveApiProxy,
+ *  degraded to live-agents catalog when absent — DSH 0.1.2-rc.1 provides no apiProxy). */
+export const inject = ['agents']
 
 export interface TelegramChannelConfig {
   token?: string
