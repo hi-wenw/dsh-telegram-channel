@@ -1,6 +1,6 @@
 {
   "name": "dsh-telegram-channel",
-  "version": "0.3.5-fox.1",
+  "version": "0.3.5",
   "description": "DeepSeek Harness Telegram mobile remote: workspace→session, /last context, /model — dsh-plugin",
   "keywords": [
     "telegram",

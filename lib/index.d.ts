@@ -1,7 +1,8 @@
 import type { Context } from '@deepseek-ai/cordis';
 import Schema from '@deepseek-ai/schemastery';
 export declare const name = "dsh-telegram-channel";
-/** agents: followup; apiProxy: workspace/session catalog + /model (Cordis requires inject to read ctx.apiProxy). */
+/** agents: followup; apiProxy is optional and resolved at runtime via ctx.get;
+ *  when absent, catalog helpers degrade to the live-agents view. */
 export declare const inject: string[];
 export interface TelegramChannelConfig {
     token?: string;

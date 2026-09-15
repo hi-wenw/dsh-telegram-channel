@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { apply } from '../src/index.ts'
+import { apply, inject } from '../src/index.ts'
+
+test('apiProxy is optional and is not a hard Cordis dependency', () => {
+  assert.deepEqual(inject, ['agents'])
+})
 
 test('apply without token does not throw and does not start effect', () => {
   const effects: string[] = []
