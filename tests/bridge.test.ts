@@ -47,6 +47,13 @@ function messageUpdate(chatId: number, userId: number, text: string, updateId = 
   }
 }
 
+function startTestBridge(bridge: TelegramBridge): void {
+  const persistence = bridge as unknown as { loadBindings: () => void; saveBindings: () => void }
+  persistence.loadBindings = () => {}
+  persistence.saveBindings = () => {}
+  bridge.start()
+}
+
 function makeAgent(id: string, followups: UserMessage[], opts?: {
   cwd?: string
   title?: string
@@ -1308,4 +1315,148 @@ test('photo without bind prompts NEED_BIND and no prompt', async () => {
   await bridge.processUpdate(photoUpdate(10, 1, 'unbound-photo', { updateId: 1 }))
   assert.equal(prompts.length, 0)
   assert.ok(sent.some((m) => m.text === MSG.NEED_BIND), 'NEED_BIND sent')
+})
+
+test('user-questions/request supports Telegram when the host has no Web answerer', async () => {
+  const sent: SentMessage[] = []
+  const followups: UserMessage[] = []
+  const sessionId = 'live-question-no-provider'
+  const agent = makeAgent(sessionId, followups)
+  let questionHook: ((request: unknown, next: () => Promise<unknown>) => Promise<unknown>) | undefined
+  let questionHookDisposed = false
+  const ctx = {
+    logger: { info() {}, warn() {}, error() {} },
+    agents: {
+      list: () => [agent],
+      roots: () => [agent],
+      get: (id: ReturnType<typeof SessionId>) => (String(id) === sessionId ? agent : undefined),
+    },
+    on(event: string, listener: (...args: any[]) => unknown) {
+      if (event === 'user-questions/request') {
+        questionHook = listener as typeof questionHook
+        return () => { questionHookDisposed = true }
+      }
+      return () => {}
+    },
+  }
+  const bridge = new TelegramBridge(ctx as any, {
+    token: 't',
+    allowedUserIds: [1],
+    allowAllUsers: false,
+    client: fakeClient(sent),
+    sleep: async () => new Promise<void>((resolve) => setTimeout(resolve, 1)),
+  })
+  startTestBridge(bridge)
+  await bridge.processUpdate(bindUpdate(10, 1, sessionId))
+  sent.length = 0
+
+  assert.ok(questionHook, 'user-questions/request hook registered')
+  let guiCalled = false
+  const answer = questionHook!({
+    agent,
+    questions: [{
+      id: 'mode',
+      question: 'Pick a mode',
+      options: [{ label: 'Fast' }, { label: 'Careful' }],
+    }],
+  }, () => {
+    guiCalled = true
+    return Promise.reject(new Error('NO_PROVIDER'))
+  })
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.equal(guiCalled, true, 'GUI waterfall continues')
+  assert.ok(sent.some((message) => message.text.includes('Pick a mode') && message.text.includes('[B] Careful')))
+  const beforeTelegramAnswer = await Promise.race([
+    answer.then(() => 'settled', () => 'settled'),
+    new Promise<string>((resolve) => setTimeout(() => resolve('pending'), 5)),
+  ])
+  assert.equal(beforeTelegramAnswer, 'pending', 'NO_PROVIDER does not end the Telegram answer path')
+
+  await bridge.processUpdate(messageUpdate(10, 1, 'B', 2))
+  assert.deepEqual(await answer, { answers: [{ id: 'mode', selected: ['Careful'] }] })
+  await bridge.stop()
+  assert.equal(questionHookDisposed, true, 'waterfall hook disposed on stop')
+})
+
+test('user-questions/request without a bound chat stays on the Web path', async () => {
+  const sent: SentMessage[] = []
+  const agent = makeAgent('live-question-unbound', [])
+  let questionHook: ((request: unknown, next: () => Promise<unknown>) => Promise<unknown>) | undefined
+  const ctx = {
+    logger: { info() {}, warn() {}, error() {} },
+    agents: { list: () => [agent], roots: () => [agent], get: () => agent },
+    on(event: string, listener: (...args: any[]) => unknown) {
+      if (event === 'user-questions/request') questionHook = listener as typeof questionHook
+      return () => {}
+    },
+  }
+  const bridge = new TelegramBridge(ctx as any, {
+    token: 't',
+    allowedUserIds: [1],
+    allowAllUsers: false,
+    client: fakeClient(sent),
+    sleep: async () => new Promise<void>((resolve) => setTimeout(resolve, 1)),
+  })
+  startTestBridge(bridge)
+
+  assert.ok(questionHook, 'user-questions/request hook registered')
+  let guiCalled = false
+  const result = await questionHook!({
+    agent,
+    questions: [{ id: 'mode', question: 'Pick a mode', options: [{ label: 'Fast' }] }],
+  }, async () => {
+    guiCalled = true
+    return 'web answer'
+  })
+  assert.equal(result, 'web answer')
+  assert.equal(guiCalled, true)
+  assert.equal(sent.length, 0, 'no Telegram prompt is sent without a bound chat')
+  await bridge.stop()
+})
+
+test('user-questions/request announces when the Web answer wins', async () => {
+  const sent: SentMessage[] = []
+  const followups: UserMessage[] = []
+  const sessionId = 'live-question-web-wins'
+  const agent = makeAgent(sessionId, followups)
+  let questionHook: ((request: unknown, next: () => Promise<unknown>) => Promise<unknown>) | undefined
+  const ctx = {
+    logger: { info() {}, warn() {}, error() {} },
+    agents: {
+      list: () => [agent],
+      roots: () => [agent],
+      get: (id: ReturnType<typeof SessionId>) => (String(id) === sessionId ? agent : undefined),
+    },
+    on(event: string, listener: (...args: any[]) => unknown) {
+      if (event === 'user-questions/request') questionHook = listener as typeof questionHook
+      return () => {}
+    },
+  }
+  const bridge = new TelegramBridge(ctx as any, {
+    token: 't',
+    allowedUserIds: [1],
+    allowAllUsers: false,
+    client: fakeClient(sent),
+    sleep: async () => new Promise<void>((resolve) => setTimeout(resolve, 1)),
+  })
+  startTestBridge(bridge)
+  await bridge.processUpdate(bindUpdate(10, 1, sessionId))
+  sent.length = 0
+
+  assert.ok(questionHook, 'user-questions/request hook registered')
+  let resolveGui!: (value: unknown) => void
+  const gui = new Promise<unknown>((resolve) => { resolveGui = resolve })
+  const answer = questionHook!({
+    agent,
+    questions: [{ id: 'mode', question: 'Pick a mode', options: [{ label: 'Fast' }] }],
+  }, () => gui)
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  resolveGui('web answer')
+  assert.equal(await answer, 'web answer')
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.ok(sent.some((message) => message.text.includes('该问题已在 Web 端作答')))
+
+  await bridge.processUpdate(messageUpdate(10, 1, 'follow-up', 2))
+  assert.equal(followups.length, 1, 'the answered question is removed from the Telegram pending state')
+  await bridge.stop()
 })

@@ -106,12 +106,10 @@ interface TgPendingApproval {
 }
 
 /** Structural view of the user-questions seam (types live in the host's dsh-user-questions package). */
-interface UserQuestionsServiceLike {
-  provider?: {
-    ask: (request: unknown) => Promise<unknown>
-    __tgHooked?: boolean
-    __tgRealAsk?: (request: unknown) => Promise<unknown>
-  }
+interface UserQuestionRequestLike {
+  agent?: Agent
+  questions?: TgQuestionItem[]
+  signal?: AbortSignal
 }
 
 /** Loose view of the approval request passed through the `approval/request` waterfall hook. */
@@ -216,6 +214,13 @@ function isRichUnsupportedError(err: unknown): boolean {
   return /method not found|unknown method|not found|404|bad request|can't parse|rich message/i.test(message)
 }
 
+function isNoQuestionAnswererError(err: unknown): boolean {
+  const message = err instanceof Error
+    ? err.message
+    : String((err as { message?: unknown } | null)?.message ?? err)
+  return /NO_PROVIDER|no user-questions answerer/i.test(message)
+}
+
 export class TelegramBridge {
   private readonly ctx: Context
   private readonly token: string
@@ -240,6 +245,7 @@ export class TelegramBridge {
   private pollPromise: Promise<void> | undefined
   private pollAbort: AbortController | undefined
   private disposeSessionListener: (() => void) | undefined
+  private disposeQuestionHook: (() => void) | undefined
 
   // ── Stability & interactivity additions ──
   /** sessionIds mid-turn (busy feedback, /stop state) */
@@ -249,7 +255,6 @@ export class TelegramBridge {
   /** chatId → serialized notice chain (prevents 429 storms) */
   private readonly noticeQueue = new Map<string, Promise<unknown>>()
   private readonly pendingAsks = new Map<string, TgPendingAsk>()
-  private hookTimer: ReturnType<typeof setTimeout> | undefined
   private readonly pendingApprovalsTG = new Map<string, TgPendingApproval>()
   private disposeApprovalHook: (() => void) | undefined
   /** sessionId → thinking indicator state (one notice per reasoning phase) */
@@ -295,7 +300,13 @@ export class TelegramBridge {
     // Restore persisted bindings (survive hot reload / restart) and install
     // the TG answering hooks (ask_user dual-path + approval dual-path).
     this.loadBindings()
-    this.hookUserQuestions()
+    this.disposeQuestionHook?.()
+    this.disposeQuestionHook = (this.ctx as unknown as {
+      on: (
+        event: string,
+        handler: (request: UserQuestionRequestLike, next: () => Promise<unknown>) => Promise<unknown>,
+      ) => () => void
+    }).on('user-questions/request', (request, next) => this.onUserQuestionRequest(request, next))
     this.disposeApprovalHook?.()
     this.disposeApprovalHook = (this.ctx as unknown as {
       on: (event: string, handler: (req: ApprovalRequestLike, next: () => Promise<string>) => Promise<string>) => () => void
@@ -333,6 +344,8 @@ export class TelegramBridge {
     this.pollAbort = undefined
     this.disposeSessionListener?.()
     this.disposeSessionListener = undefined
+    this.disposeQuestionHook?.()
+    this.disposeQuestionHook = undefined
     // Never dispose host agents — only clear remote bindings.
     this.bindings.clear()
     this.renderPrefs.clear()
@@ -351,10 +364,6 @@ export class TelegramBridge {
     this.compacting.clear()
     for (const group of this.mediaGroups.values()) clearTimeout(group.timer)
     this.mediaGroups.clear()
-    if (this.hookTimer) {
-      clearTimeout(this.hookTimer)
-      this.hookTimer = undefined
-    }
     this.disposeApprovalHook?.()
     this.disposeApprovalHook = undefined
     if (this.pollPromise) {
@@ -1520,84 +1529,47 @@ export class TelegramBridge {
 
   // ── ask_user_question: TG answering via dual-path race with the UI ──
 
-  private userQuestions(): UserQuestionsServiceLike | undefined {
-    const ctx = this.ctx as Context & {
-      get?: (name: string, strict?: boolean) => unknown
-      userQuestions?: UserQuestionsServiceLike
-    }
-    if (typeof ctx.get === 'function') {
-      try {
-        const service = ctx.get('userQuestions') as UserQuestionsServiceLike | undefined
-        if (service) return service
-      } catch {
-        // Continue to the plain-object fallback used by tests and simple hosts.
-      }
-    }
-    try {
-      return Object.prototype.hasOwnProperty.call(ctx, 'userQuestions')
-        ? ctx.userQuestions
-        : undefined
-    } catch {
-      return undefined
-    }
-  }
-
   /**
-   * Wrap the UI provider's ask() so Telegram gets a parallel answer path.
-   * `Promise.race` decides; the UI path is untouched. The TG promise NEVER
-   * settles when there is no bound chat — race would kill the UI's window
-   * with that early rejection.
+   * Mirror the host's agent-scoped waterfall request to Telegram. The next
+   * handler remains the Web answer path; NO_PROVIDER means no Web answerer is
+   * available, so keep waiting for Telegram instead of failing the request.
    */
-  private hookUserQuestions(attempt = 0): void {
+  private async onUserQuestionRequest(
+    request: UserQuestionRequestLike,
+    next: () => Promise<unknown>,
+  ): Promise<unknown> {
+    const sessionId = request?.agent?.id !== undefined ? String(request.agent.id) : undefined
+    const hasBoundChat = sessionId !== undefined
+      && [...this.bindings.values()].some((binding) => binding.sessionId === sessionId)
+    if (!hasBoundChat || !Array.isArray(request.questions) || request.questions.length === 0) {
+      return next()
+    }
+
+    const tg = this.registerTgAsk(request)
+    let gui: Promise<unknown>
     try {
-      const provider = this.userQuestions()?.provider
-      if (provider) {
-        if (provider.__tgHooked && provider.__tgRealAsk) {
-          // Hot reload: re-point the wrapper at THIS bridge instance.
-          const realAsk = provider.__tgRealAsk
-          const self = this
-          provider.ask = function (request: unknown): Promise<unknown> {
-            const tg = self.registerTgAsk(request)
-            let gui: Promise<unknown>
-            try {
-              gui = realAsk(request)
-            } catch (err) {
-              tg.reject(err as Error)
-              throw err
-            }
-            void gui.then(() => self.settleGuiSide(request), () => self.settleGuiSide(request))
-            return Promise.race([tg.promise, gui])
-          }
-          return
-        }
-        const realAsk = provider.ask.bind(provider) as (request: unknown) => Promise<unknown>
-        provider.__tgRealAsk = realAsk
-        const self = this
-        provider.ask = function (request: unknown): Promise<unknown> {
-          const tg = self.registerTgAsk(request)
-          let gui: Promise<unknown>
-          try {
-            gui = realAsk(request)
-          } catch (err) {
-            tg.reject(err as Error)
-            throw err
-          }
-          void gui.then(() => self.settleGuiSide(request), () => self.settleGuiSide(request))
-          return Promise.race([tg.promise, gui])
-        }
-        provider.__tgHooked = true
-        this.ctx.logger.info('dsh-telegram-channel: ask_user TG answering hook installed')
-        return
-      }
+      gui = next()
     } catch (err) {
-      if (attempt === 0)
-        this.ctx.logger.warn(`dsh-telegram-channel: userQuestions hook deferred: ${this.redact(err)}`)
+      this.discardTgAsk(request)
+      tg.reject(err instanceof Error ? err : new Error(String(err)))
+      throw err
     }
-    if (attempt >= 30) {
-      this.ctx.logger.warn('dsh-telegram-channel: user-questions provider never appeared; TG answering disabled')
-      return
-    }
-    this.hookTimer = setTimeout(() => this.hookUserQuestions(attempt + 1), 2000)
+
+    const guiSafe = gui.catch((err: unknown) => {
+      if (isNoQuestionAnswererError(err)) {
+        return new Promise<never>(() => {})
+      }
+      this.discardTgAsk(request)
+      tg.reject(err instanceof Error ? err : new Error(String(err)))
+      throw err
+    })
+    void gui.then(
+      () => this.settleGuiSide(request),
+      (err: unknown) => {
+        if (!isNoQuestionAnswererError(err)) this.discardTgAsk(request)
+      },
+    )
+    return Promise.race([tg.promise, guiSafe])
   }
 
   private registerTgAsk(request: unknown): { promise: Promise<unknown>; reject: (err: Error) => void } {
@@ -1643,6 +1615,12 @@ export class TelegramBridge {
       if (!p.ask.answered) {
         this.enqueueNotice(Number(chatId), '该问题已在 Web 端作答，TG 作答通道关闭')
       }
+    }
+  }
+
+  private discardTgAsk(request: unknown): void {
+    for (const [chatId, pending] of [...this.pendingAsks]) {
+      if (pending.req === request) this.pendingAsks.delete(chatId)
     }
   }
 

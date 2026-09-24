@@ -33,6 +33,7 @@ export declare class TelegramBridge {
     private pollPromise;
     private pollAbort;
     private disposeSessionListener;
+    private disposeQuestionHook;
     /** sessionIds mid-turn (busy feedback, /stop state) */
     private readonly busySessions;
     /** chatId → typing heartbeat interval handle */
@@ -40,7 +41,6 @@ export declare class TelegramBridge {
     /** chatId → serialized notice chain (prevents 429 storms) */
     private readonly noticeQueue;
     private readonly pendingAsks;
-    private hookTimer;
     private readonly pendingApprovalsTG;
     private disposeApprovalHook;
     /** sessionId → thinking indicator state (one notice per reasoning phase) */
@@ -128,16 +128,15 @@ export declare class TelegramBridge {
     private startTypingHeartbeat;
     private stopTypingHeartbeat;
     private stopAllHeartbeats;
-    private userQuestions;
     /**
-     * Wrap the UI provider's ask() so Telegram gets a parallel answer path.
-     * `Promise.race` decides; the UI path is untouched. The TG promise NEVER
-     * settles when there is no bound chat — race would kill the UI's window
-     * with that early rejection.
+     * Mirror the host's agent-scoped waterfall request to Telegram. The next
+     * handler remains the Web answer path; NO_PROVIDER means no Web answerer is
+     * available, so keep waiting for Telegram instead of failing the request.
      */
-    private hookUserQuestions;
+    private onUserQuestionRequest;
     private registerTgAsk;
     private settleGuiSide;
+    private discardTgAsk;
     private formatAskPending;
     private handleTgAnswer;
     private onApprovalRequest;
