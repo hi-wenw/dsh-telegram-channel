@@ -209,6 +209,26 @@ function contentToText(content: readonly ContentBlock[]): string {
     .join('')
 }
 
+/**
+ * Parse a `todo_write` tool call's raw arguments into the stored todo shape.
+ *
+ * dsh 0.2 logs tool arguments exactly as the model produced them, so this takes
+ * the unparsed JSON string. Returns `undefined` when there is nothing usable to
+ * parse (missing, empty, not JSON, or no `todos` array), which the caller
+ * treats as "leave the known list alone" rather than "the list is now empty".
+ */
+function parseTodoArguments(raw: unknown): Array<{ content?: string; status?: string }> | undefined {
+  if (typeof raw !== 'string' || raw.trim() === '') return undefined
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return undefined
+  }
+  const todos = (parsed as { todos?: unknown } | null)?.todos
+  return Array.isArray(todos) ? (todos as Array<{ content?: string; status?: string }>) : undefined
+}
+
 function isRichUnsupportedError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err)
   return /method not found|unknown method|not found|404|bad request|can't parse|rich message/i.test(message)
@@ -1311,6 +1331,15 @@ export class TelegramBridge {
         }
         this.callNames.set(String(event.data.callId), String(name))
       }
+      // dsh 0.2 moved the todo state change out of the session log: there is no
+      // `todo/write` event any more, the host's todo tool appends a plain
+      // `tool/call` named `todo_write` whose raw arguments carry the list.
+      // Keep the phone-facing progress notice (and /mission state) here, and
+      // suppress the raw JSON tool line that would otherwise be sent instead.
+      if (name === 'todo_write') {
+        this.applyTodoWrite(id, event.data?.arguments, targets)
+        return
+      }
       const args = typeof event.data?.arguments === 'string' ? event.data.arguments : ''
       const brief = args.replace(/\s+/g, ' ').trim()
       const shown = brief.length > 60 ? `${brief.slice(0, 60)}…` : brief
@@ -1327,13 +1356,17 @@ export class TelegramBridge {
       return
     }
 
-    if (event.type === 'assistant/chunk') {
-      // Thinking indicator: once per reasoning phase, status only (no content).
-      const chunk = event.data?.chunk as { type?: string; block?: { type?: string } } | undefined
-      const ctype = String(chunk?.type ?? '')
-      const btype = String(chunk?.block?.type ?? '')
-      const isReasoning = ctype.includes('reasoning') || btype.includes('reasoning') || btype.includes('think')
-      if (isReasoning && this.thinkingSessions.get(id) !== true) {
+    if (event.type === 'step/start') {
+      // Thinking indicator: once per step, status only (no content).
+      //
+      // dsh 0.2 has no incremental `assistant/chunk` session event any more: a
+      // step records its whole model stream on settlement (`assistant/message`,
+      // or `assistant/attempt` when the attempt committed no surface message).
+      // Reasoning activity is therefore not observable *while* it happens, so
+      // the closest available signal is the step boundary itself — announce
+      // once per model call. Every tool call and every assistant message resets
+      // the flag, so a later step of the same turn announces again.
+      if (this.thinkingSessions.get(id) !== true) {
         this.thinkingSessions.set(id, true)
         for (const b of targets)
           this.enqueueNotice(b.chatId, '> Thinking…')
@@ -1353,17 +1386,31 @@ export class TelegramBridge {
       return
     }
 
-    if (event.type === 'todo/write') {
-      const todos = Array.isArray(event.data?.todos) ? event.data.todos : []
-      this.lastTodos.set(id, todos as Array<{ content?: string; status?: string }>)
-      if (todos.length === 0) return
-      const done = todos.filter((t) => t?.status === 'completed').length
-      const current = todos.find((t) => t?.status === 'in_progress') ?? todos.find((t) => t?.status === 'pending')
-      const cur = current ? String(current.content ?? '').slice(0, 50) : ''
-      for (const b of targets)
-        this.enqueueNotice(b.chatId, `> 进度 ${done}/${todos.length}${cur ? `：${cur}` : ''}`)
-      return
-    }
+  }
+
+  /**
+   * Record a todo list and announce its progress summary.
+   *
+   * dsh 0.1 carried this on a `todo/write` session event. dsh 0.2 dropped that
+   * event — the state change now travels as the host todo tool's `tool/call`,
+   * whose `arguments` is the raw JSON string the model produced
+   * (`{"todos":[…]}`), unparsed like every other tool call. A malformed or
+   * absent payload is ignored rather than clearing a previously known list.
+   */
+  private applyTodoWrite(
+    id: string,
+    rawArguments: unknown,
+    targets: Iterable<{ chatId: number }>,
+  ): void {
+    const todos = parseTodoArguments(rawArguments)
+    if (todos === undefined) return
+    this.lastTodos.set(id, todos)
+    if (todos.length === 0) return
+    const done = todos.filter((t) => t?.status === 'completed').length
+    const current = todos.find((t) => t?.status === 'in_progress') ?? todos.find((t) => t?.status === 'pending')
+    const cur = current ? String(current.content ?? '').slice(0, 50) : ''
+    for (const b of targets)
+      this.enqueueNotice(b.chatId, `> 进度 ${done}/${todos.length}${cur ? `：${cur}` : ''}`)
   }
 
   // ── /rich: per-chat rendering mode (persisted) ──

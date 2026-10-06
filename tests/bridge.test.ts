@@ -1460,3 +1460,107 @@ test('user-questions/request announces when the Web answer wins', async () => {
   assert.equal(followups.length, 1, 'the answered question is removed from the Telegram pending state')
   await bridge.stop()
 })
+
+// ── dsh 0.2 session-event vocabulary ──
+//
+// 0.2 removed two events this bridge used to consume: `assistant/chunk` (the
+// Thinking indicator) and `todo/write` (the progress notice). These tests pin
+// the replacements: `step/start` for the indicator, and the host todo tool's
+// `todo_write` tool call for the list.
+
+function eventHarness(id: string, sent: SentMessage[], followups: UserMessage[]) {
+  const agent = makeAgent(id, followups)
+  let sessionListener: ((session: { id: ReturnType<typeof SessionId> }, event: unknown) => void) | undefined
+  const ctx = {
+    logger: { info() {}, warn() {}, error() {} },
+    agents: {
+      list: () => [agent],
+      roots: () => [agent],
+      get: (sid: ReturnType<typeof SessionId>) => (String(sid) === id ? agent : undefined),
+    },
+    on(event: string, listener: (session: { id: ReturnType<typeof SessionId> }, event: unknown) => void) {
+      if (event === 'session/event') sessionListener = listener
+      return () => {}
+    },
+  }
+  const bridge = new TelegramBridge(ctx as any, {
+    token: 't',
+    allowedUserIds: [1],
+    allowAllUsers: false,
+    client: fakeClient(sent),
+    sleep: async () => {},
+  })
+  startTestBridge(bridge)
+  const emit = async (event: unknown): Promise<void> => {
+    await sessionListener?.({ id: SessionId(id) }, event)
+    // onSessionEvent is invoked with `void`, and notices chain through
+    // enqueueNotice — flush both before asserting.
+    await new Promise((r) => setTimeout(r, 0))
+    await new Promise((r) => setTimeout(r, 0))
+  }
+  return { bridge, emit }
+}
+
+test('step/start drives the Thinking notice once per model call', async () => {
+  const sent: SentMessage[] = []
+  const followups: UserMessage[] = []
+  const { bridge, emit } = eventHarness('live-step', sent, followups)
+  await bridge.processUpdate(bindUpdate(10, 1, 'live-step'))
+  sent.length = 0
+  const thinking = (): number => sent.filter((m) => m.text === '> Thinking…').length
+
+  await emit({ type: 'step/start', data: { turn: 1, step: 1 } })
+  assert.equal(thinking(), 1, 'first step announces')
+
+  await emit({ type: 'step/start', data: { turn: 1, step: 1 } })
+  assert.equal(thinking(), 1, 'the same step does not announce twice')
+
+  // A tool call resets the flag, so the next step of the same turn announces.
+  await emit({ type: 'tool/call', data: { turn: 1, step: 1, callId: 'c1', name: 'shell', arguments: '{}' } })
+  await emit({ type: 'step/start', data: { turn: 1, step: 2 } })
+  assert.equal(thinking(), 2, 'a later step announces again')
+
+  await bridge.stop()
+})
+
+test('todo_write tool call carries the todo list (progress notice + /mission)', async () => {
+  const sent: SentMessage[] = []
+  const followups: UserMessage[] = []
+  const { bridge, emit } = eventHarness('live-todo', sent, followups)
+  await bridge.processUpdate(bindUpdate(10, 1, 'live-todo'))
+  sent.length = 0
+
+  await emit({
+    type: 'tool/call',
+    data: {
+      turn: 1,
+      step: 1,
+      callId: 'call-todo',
+      name: 'todo_write',
+      arguments: JSON.stringify({
+        todos: [
+          { content: '读代码', status: 'completed' },
+          { content: '改兼容', status: 'in_progress' },
+          { content: '跑测试', status: 'pending' },
+        ],
+      }),
+    },
+  })
+  assert.ok(sent.some((m) => m.text === '> 进度 1/3：改兼容'), 'progress notice uses the parsed list')
+  assert.ok(!sent.some((m) => m.text.startsWith('> todo_write')), 'the raw JSON tool line is suppressed')
+
+  // A malformed payload must not wipe the list we already know about.
+  await emit({
+    type: 'tool/call',
+    data: { turn: 1, step: 1, callId: 'call-todo-2', name: 'todo_write', arguments: '{not json' },
+  })
+
+  await bridge.processUpdate(messageUpdate(10, 1, '/mission', 2))
+  const mission = sent.at(-1)!.text
+  assert.match(mission, /✓ 1\. 读代码/)
+  assert.match(mission, /⟳ 2\. 改兼容/)
+  assert.match(mission, /· 3\. 跑测试/)
+  assert.match(mission, /1\/3 已完成/)
+
+  await bridge.stop()
+})

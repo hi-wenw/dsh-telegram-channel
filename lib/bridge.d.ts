@@ -111,6 +111,16 @@ export declare class TelegramBridge {
     private interruptibleDelay;
     private interruptibleSleep;
     private onSessionEvent;
+    /**
+     * Record a todo list and announce its progress summary.
+     *
+     * dsh 0.1 carried this on a `todo/write` session event. dsh 0.2 dropped that
+     * event — the state change now travels as the host todo tool's `tool/call`,
+     * whose `arguments` is the raw JSON string the model produced
+     * (`{"todos":[…]}`), unparsed like every other tool call. A malformed or
+     * absent payload is ignored rather than clearing a previously known list.
+     */
+    private applyTodoWrite;
     private handleRichCommand;
     private deliver;
     private deliverHtml;
