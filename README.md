@@ -24,6 +24,8 @@ Telegram **手机遥控器** for DeepSeek Harness：附着本机正在跑的 Web
 | 数字 User ID | `@userinfobot` |
 | 代理（可选） | 若直连不上 `api.telegram.org`，需本机 HTTP(S)_PROXY |
 
+兼容：DSH 0.1 线（`@deepseek-ai/dsh-agent` 0.1.x）与 0.2 线（0.2.x）都已声明支持，插件在 0.2 上用 `step/start` 事件做「思考中」提示、用 `todo_write` 工具调用同步任务清单。
+
 **不需要 Python。**
 
 ---
@@ -240,6 +242,8 @@ dsh plugin --profile web add github:hi-wenw/dsh-telegram-channel
 - Telegram bot token + numeric user id
 - Optional HTTP(S)_PROXY if Telegram API is blocked
 - **No Python required**
+
+Compatibility: both the DSH 0.1 line (`@deepseek-ai/dsh-agent` 0.1.x) and the 0.2 line (0.2.x) are declared in `peerDependencies`. On 0.2 the plugin drives the Thinking indicator from `step/start` and syncs the todo list from the `todo_write` tool call.
 
 ### What this is
 
